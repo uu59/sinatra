@@ -283,6 +283,23 @@ module Sinatra
       alias errback callback
     end
 
+    class StreamChunked < Stream
+      def initialize(*args)
+        super(*args)
+        @callbacks << proc do
+          @front.call("0\r\n\r\n")
+        end
+      end
+
+      def <<(data)
+        @scheduler.schedule do
+          size = data.to_s.bytesize
+          @front.call([size.to_s(16), "\r\n", data.to_s, "\r\n"].join)
+        end
+        self
+      end
+    end
+
     # Allows to start sending data to the client even though later parts of
     # the response body have not yet been generated.
     #
@@ -302,7 +319,12 @@ module Sinatra
         end
       end
 
-      out = Stream.new(scheduler, keep_open, &block)
+      if env["HTTP_VERSION"] == "HTTP/1.1"
+        out = StreamChunked.new(scheduler, keep_open, &block)
+        headers "Transfer-Encoding" => "chunked"
+      else
+        out = Stream.new(scheduler, keep_open, &block)
+      end
 
       if env['async.close']
         env['async.close'].callback { out.close }
